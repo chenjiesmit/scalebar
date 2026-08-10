@@ -1,0 +1,13 @@
+# your own microscopy files never belong in the repo
+*.oir
+tests/fixture.oir
+tests/raw_check.bin
+
+# test artefacts
+tests/node_modules/
+tests/*.png
+tests/*.tif
+
+# OS noise
+.DS_Store
+Thumbs.db
