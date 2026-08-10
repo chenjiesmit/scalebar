@@ -1,0 +1,1456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Scale Bar — calibrated TIFF from Olympus .oir</title>
+<meta name="description" content="Reads the pixel size your confocal recorded and burns a scale bar of exactly the right length. Runs entirely in the browser; the file never leaves the machine." />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link href="https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#F5F5F2; --bg-soft:#EFEFEB; --card:#FFFFFF; --card-2:#FAFAF8;
+    --line:#EAEAE4; --line-2:#E0E0D9;
+    --ink:#1E1F21; --ink-2:#43474C; --muted:#7C7F84; --muted-2:#A2A5AA;
+    --brand:#2563EB; --brand-soft:#E8EEFD; --brand-ink:#1D4ED8; --accent:#0EA5E9;
+    --warn:#B4791B; --warn-soft:#F7EEDD; --warn-ink:#9a5f01; --men:#8A9099; --men-soft:#EEEEE9;
+    --shadow-sm:0 1px 2px rgba(23,22,20,.04);
+    --shadow:0 2px 10px rgba(23,22,20,.05), 0 1px 2px rgba(23,22,20,.04);
+    --shadow-lg:0 14px 44px rgba(23,22,20,.10), 0 2px 8px rgba(23,22,20,.05);
+    --mono:'SFMono-Regular',ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace;
+    --sans:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+    --display:'General Sans','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    --ease:cubic-bezier(.2,.7,.2,1);
+    --bar:56px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.55;
+       -webkit-font-smoothing:antialiased;letter-spacing:-.1px;overflow:hidden}
+  button,select,input{font-family:inherit;color:inherit}
+  :focus-visible{outline:2px solid var(--brand);outline-offset:2px;border-radius:4px}
+  ::selection{background:var(--brand-soft);color:var(--brand-ink)}
+
+  /* ---------------- topbar: brand, open file, one line of flags ---------------- */
+  .topbar{height:var(--bar);display:flex;align-items:center;gap:14px;padding:0 16px;
+          border-bottom:1px solid var(--line);background:var(--card);position:relative;z-index:40}
+  .brand{display:flex;align-items:center;gap:9px;user-select:none;flex:none}
+  .brand .mark{width:26px;height:26px;border-radius:8px;background:linear-gradient(140deg,#3b82f6,#1d4ed8);
+               display:grid;place-items:center;box-shadow:0 2px 8px rgba(37,99,235,.30)}
+  .brand .mark svg{width:15px;height:15px}
+  .brand b{font-family:var(--display);font-size:17px;letter-spacing:-.5px;font-weight:600}
+  .fileid{display:flex;align-items:baseline;gap:10px;min-width:0;padding-left:14px;
+          border-left:1px solid var(--line);flex:1 1 auto;overflow:hidden}
+  .fileid .nm{font-family:var(--mono);font-size:12.5px;color:var(--ink-2);white-space:nowrap;
+              overflow:hidden;text-overflow:ellipsis}
+  .fileid .sub{font-size:11px;color:var(--muted-2);font-family:var(--mono);white-space:nowrap;flex:none}
+  .fileid .sub b{color:var(--ink-2);font-weight:500}
+  /* the single reminder line, sitting at the very top as asked */
+  .flagline{margin-left:auto;display:flex;align-items:center;gap:14px;min-width:0;overflow:hidden}
+  .flagline:empty{display:none}
+  .flagline .f{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;white-space:nowrap;
+               overflow:hidden;text-overflow:ellipsis;font-weight:500}
+  .flagline .f i{width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+  .flagline .f.warn{color:var(--warn-ink)}
+  .flagline .f.men{color:var(--men)}
+  .topact{display:flex;align-items:center;gap:8px;flex:none}
+  @media(max-width:1320px){.fileid .sub{display:none}}
+  @media(max-width:1180px){.flagline{display:none}}
+
+  /* ---------------- three columns, full height, image gets the middle ---------------- */
+  .app{display:grid;grid-template-columns:296px minmax(0,1fr) clamp(508px,36vw,616px);height:calc(100% - var(--bar))}
+  /* 02+03 in one column, 04 Export beside it — Export must never be below the fold */
+  .rails{display:grid;grid-template-columns:1.05fr 1fr;min-height:0}
+  .rails>.col+.col{border-left:1px solid var(--line)}
+  /* only give up the side-by-side when the window really cannot hold it */
+  @media(max-width:1280px){
+    .app{grid-template-columns:296px minmax(0,1fr) 300px}
+    .rails{grid-template-columns:1fr;overflow-y:auto}
+    .rails>.col{overflow:visible}
+    .rails>.col+.col{border-left:0;border-top:1px solid var(--line)}
+  }
+  .col{overflow-y:auto;overflow-x:hidden;padding:14px}
+  .col.left{border-right:1px solid var(--line);background:var(--card-2)}
+  .col.right{border-left:1px solid var(--line);background:var(--card-2)}
+  .rails>.col{background:var(--card-2);display:flex;flex-direction:column;gap:14px}
+  .rails>.col>.sec{flex:none;margin-bottom:0}
+  /* the provenance sits at the foot of its column, and the export buttons spread
+     into whatever is left, so neither column trails off into dead space */
+  .rails>.col>.prov{margin-top:auto;flex:none}
+  #secExport{flex:1;display:flex;flex-direction:column;min-height:0}
+  .willwrite{margin-top:auto;padding-top:14px;border-top:1px solid var(--line)}
+  .willwrite .fn{font-family:var(--mono);font-size:10.5px;color:var(--ink-2);word-break:break-all;
+                 line-height:1.5;margin-top:7px}
+  .willwrite .sub{font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:5px;line-height:1.6}
+  .legend{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+  .legend span{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:600;
+               background:var(--card);border:1px solid var(--line);border-radius:999px;padding:2px 8px 2px 6px}
+  .legend i{width:8px;height:8px;border-radius:50%;flex:none}
+  .legend .none{color:var(--muted-2);font-weight:450;background:none;border-style:dashed}
+  #secExport .panel{flex:none}
+  #secExport .dl{flex:none}
+  @media(max-width:1280px){
+    .rails>.col{display:block}
+    .rails>.col>.sec{margin-bottom:14px}
+    #secExport{display:block}
+
+  }
+  .center{display:grid;grid-template-rows:minmax(0,1fr) auto;min-height:0;padding:14px 14px 10px}
+  #stage{min-height:0;display:flex;align-items:center;justify-content:center;overflow:hidden}
+  .mat{background:#000;border-radius:8px;overflow:hidden;line-height:0;position:relative;
+       box-shadow:0 6px 26px rgba(23,22,20,.16),inset 0 0 0 1px rgba(255,255,255,.07);display:inline-flex}
+  canvas#view{display:block;cursor:crosshair;touch-action:none}
+  /* the image wipes in behind a bright leading edge — a confocal builds its
+     frame by raster scanning, so the reveal is the instrument's own gesture */
+  .mat.scanning > canvas{animation:reveal .85s var(--ease) both}
+  @keyframes reveal{from{clip-path:inset(0 0 100% 0)}to{clip-path:inset(0 0 0 0)}}
+  .sweep{position:absolute;left:0;right:0;height:9%;top:-9%;pointer-events:none;z-index:2;
+         background:linear-gradient(to bottom,rgba(37,99,235,0) 0%,rgba(147,197,253,.45) 55%,
+                    rgba(219,234,254,.92) 88%,#ffffff 100%);
+         box-shadow:0 2px 22px 5px rgba(96,165,250,.55);
+         animation:scan .85s var(--ease) forwards}
+  @keyframes scan{from{top:-9%}to{top:100%}}
+  .hint{font-family:var(--mono);font-size:11px;color:var(--muted-2);letter-spacing:-.1px;
+        padding-top:10px;text-align:center}
+  @media(prefers-reduced-motion:reduce){.sweep,.rise,.mat.scanning > canvas{animation:none}}
+
+  @media(max-width:1000px){
+    body{overflow:auto}
+    .app{grid-template-columns:1fr;height:auto}
+    .col,.center{overflow:visible}
+    .col.left{border-right:0;border-bottom:1px solid var(--line);order:2;background:var(--bg)}
+    .col.right{border-left:0;border-top:1px solid var(--line);order:3;background:var(--bg)}
+    .center{order:1;display:block;padding:14px}
+    #stage{display:block}
+    canvas#view{max-width:100%;height:auto!important;width:100%!important}
+  }
+
+  /* ---------------- shared ---------------- */
+  .eyebrow{font-size:10.5px;letter-spacing:1.4px;text-transform:uppercase;color:var(--muted-2);font-weight:600}
+  .rise{animation:fadeUp .3s var(--ease) both}
+  @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+
+  .btn{border:1px solid var(--line-2);background:var(--card);color:var(--ink);border-radius:9px;
+       padding:8px 13px;font-size:12.5px;cursor:pointer;display:flex;align-items:center;gap:7px;
+       transition:all .13s var(--ease);white-space:nowrap;font-weight:500;box-shadow:var(--shadow-sm)}
+  .btn:hover{border-color:var(--brand);color:var(--brand)}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+  .btn:disabled:hover{border-color:var(--line-2);color:var(--ink)}
+  .btn.primary{background:linear-gradient(140deg,#3b82f6,#1d4ed8);color:#fff;border:none;font-weight:600;
+               box-shadow:0 2px 8px rgba(37,99,235,.28)}
+  .btn.primary:hover{filter:brightness(1.06);color:#fff}
+  .btn.primary:disabled:hover{filter:none}
+
+  .seg{display:flex;gap:3px;background:var(--card);border:1px solid var(--line);border-radius:9px;padding:3px}
+  .seg button{font-size:11.5px;font-weight:600;color:var(--muted);padding:5px 9px;border-radius:6px;
+              cursor:pointer;background:none;border:0;transition:background .13s,color .13s;white-space:nowrap}
+  .seg button:hover{color:var(--ink)}
+  .seg button[aria-pressed=true]{background:var(--brand);color:#fff}
+
+  /* ---------------- left column: what the file says ---------------- */
+  .meta{display:flex;flex-direction:column;gap:6px}
+  .prov{margin-top:4px;border-top:1px solid var(--line);padding-top:12px}
+  .prov .meta{margin-top:8px}
+  .meta div{font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.45}
+  .meta b{color:var(--ink-2);font-weight:500;display:block}
+
+  /* ---------------- right column: the controls ---------------- */
+  .sec{margin-bottom:14px}
+  .sec:last-child{margin-bottom:4px}
+  .sec>h2{display:flex;align-items:center;gap:9px;margin-bottom:11px;font-family:var(--display);
+          font-size:14px;font-weight:560;letter-spacing:-.3px}
+  .sec>h2 .n{font-family:var(--mono);font-size:10px;color:var(--brand);background:var(--brand-soft);
+             width:22px;height:22px;border-radius:7px;display:grid;place-items:center;font-weight:600;flex:none}
+  /* the folder block is a mode, not a step in the single-file flow, so it is
+     lettered rather than numbered */
+  .sec>h2 .n.alt{color:var(--men);background:var(--men-soft);width:auto;padding:0 6px;font-size:9px;letter-spacing:.06em}
+  .bprog{height:3px;border-radius:2px;background:var(--line-2);margin-top:10px;overflow:hidden}
+  .bprog i{display:block;height:100%;width:0;background:linear-gradient(90deg,#3b82f6,#1d4ed8);transition:width .2s var(--ease)}
+  .blog{font-family:var(--mono);font-size:10px;line-height:1.7}
+  .bgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(76px,1fr));gap:7px;margin-top:10px}
+  .bthumb{display:block;text-decoration:none;border:1px solid var(--line);border-radius:7px;overflow:hidden;
+          background:#000;padding:0;cursor:pointer;transition:border-color .13s var(--ease),transform .13s var(--ease),
+          box-shadow .13s var(--ease)}
+  .bthumb:hover{border-color:var(--brand);transform:translateY(-1px)}
+  .bthumb.on{border-color:var(--brand);box-shadow:0 0 0 2px var(--brand-soft)}
+  .bthumb.on span{color:var(--brand-ink);font-weight:600}
+  .bthumb img{display:block;width:100%;height:auto}
+  .bthumb span{display:block;background:var(--card);color:var(--muted);font-family:var(--mono);
+               font-size:8.5px;padding:3px 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .brow{display:flex;gap:6px;margin-top:10px}
+  .brow .btn{flex:1;justify-content:center;padding:7px 9px;font-size:11.5px}
+  .blog .ok{color:var(--muted)} .blog .bad{color:var(--warn-ink)} .blog .n2{color:var(--ink-2)}
+  .sec>h2 .side{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--muted);font-weight:400;
+                letter-spacing:-.1px;white-space:nowrap}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;box-shadow:var(--shadow-sm)}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:9px}
+  .row:last-child{margin-bottom:0}
+  .row>span:first-child{font-size:12px;color:var(--muted);font-weight:500}
+  .row output{font-family:var(--mono);font-size:10.5px;color:var(--muted-2);min-width:5ch;text-align:right}
+
+  .ch{padding:11px 0;border-top:1px solid var(--line)}
+  .ch:first-child{border-top:0;padding-top:0}
+  .ch:last-child{padding-bottom:0}
+  .ch.off{opacity:.45}
+  .ch-head{display:flex;align-items:center;gap:8px}
+  .chip{width:11px;height:11px;border-radius:3px;flex:none;box-shadow:inset 0 0 0 1px rgba(0,0,0,.35)}
+  .ch-name{font-weight:600;font-size:12.5px}
+  .ch-dye{font-size:11px;color:var(--muted);font-weight:450;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sw{position:relative;margin-left:auto;display:inline-flex;align-items:center;cursor:pointer;flex:none}
+  .sw input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer}
+  .sw i{width:30px;height:17px;border-radius:999px;background:var(--line-2);position:relative;
+        transition:background .16s var(--ease)}
+  .sw i::after{content:'';position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;
+               background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);transition:transform .16s var(--ease)}
+  .sw input:checked + i{background:var(--brand)}
+  .sw input:checked + i::after{transform:translateX(13px)}
+  .sw input:disabled + i{opacity:.4}
+  .ch-in{flex:1;min-width:0;background:var(--card-2);border:1px solid var(--line);border-radius:6px;
+         padding:3px 7px;font-size:11.5px;color:var(--ink);font-family:var(--sans);letter-spacing:-.1px}
+  .ch-in::placeholder{color:var(--muted-2)}
+  .ch-in:focus{border-color:var(--brand);background:var(--card);outline:none}
+  .cbs{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+  .cb{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-2);cursor:pointer;font-weight:500}
+  .cb input{appearance:none;-webkit-appearance:none;width:15px;height:15px;border:1px solid var(--line-2);
+            border-radius:4px;background:var(--card);cursor:pointer;position:relative;flex:none;
+            transition:background .13s var(--ease),border-color .13s var(--ease)}
+  .cb input:checked{background:var(--brand);border-color:var(--brand)}
+  .cb input:checked::after{content:"";position:absolute;left:4.5px;top:1.5px;width:3px;height:7px;
+            border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
+  .cb input:disabled{opacity:.45;cursor:not-allowed}
+  .nosig{font-family:var(--mono);font-size:9.5px;color:var(--men);background:var(--men-soft);
+         border-radius:5px;padding:3px 6px;margin-top:7px;letter-spacing:-.1px}
+  .lut{display:flex;gap:4px;margin:9px 0 7px}
+  .lut button{width:18px;height:18px;border-radius:5px;border:1px solid rgba(0,0,0,.3);cursor:pointer;padding:0;
+              transition:transform .12s var(--ease),box-shadow .12s var(--ease)}
+  .lut button:hover{transform:translateY(-1px)}
+  .lut button[aria-pressed=true]{box-shadow:0 0 0 2px var(--card),0 0 0 3.5px var(--brand)}
+  .lvl{display:grid;grid-template-columns:32px 1fr auto;gap:4px 8px;align-items:center}
+  .lvl span{font-size:10.5px;color:var(--muted)}
+  .lvl output{font-family:var(--mono);font-size:10.5px;color:var(--muted-2);text-align:right;min-width:4ch}
+
+  input[type=range]{-webkit-appearance:none;appearance:none;background:transparent;width:100%;height:16px;margin:0;cursor:pointer}
+  input[type=range]::-webkit-slider-runnable-track{height:3px;border-radius:2px;background:var(--line-2)}
+  input[type=range]::-moz-range-track{height:3px;border-radius:2px;background:var(--line-2)}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;border-radius:50%;
+    background:var(--card);border:1.5px solid var(--brand);box-shadow:var(--shadow-sm);margin-top:-5px;
+    transition:transform .12s var(--ease)}
+  input[type=range]::-moz-range-thumb{width:13px;height:13px;border-radius:50%;background:var(--card);
+    border:1.5px solid var(--brand);box-shadow:var(--shadow-sm)}
+  input[type=range]:active::-webkit-slider-thumb{transform:scale(1.15)}
+
+  .grat{display:flex;flex-direction:column;gap:1px}
+  .grat button{display:grid;grid-template-columns:52px 1fr;align-items:center;gap:9px;background:none;
+               border:0;border-radius:7px;padding:7px;cursor:pointer;text-align:left;width:100%;
+               transition:background .13s var(--ease)}
+  .grat button:hover{background:var(--bg-soft)}
+  .grat button[aria-pressed=true]{background:var(--brand-soft)}
+  .grat .len{font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:-.2px}
+  .grat button[aria-pressed=true] .len{color:var(--brand-ink);font-weight:700}
+  .grat .track{height:16px;position:relative;border-left:1px solid var(--line-2)}
+  .grat .seg2{position:absolute;left:0;top:6px;height:4px;border-radius:2px;background:var(--line-2)}
+  .grat button:hover .seg2{background:var(--muted-2)}
+  .grat button[aria-pressed=true] .seg2{background:linear-gradient(90deg,#3b82f6,#1d4ed8)}
+  .grat .pct{position:absolute;top:1px;font-family:var(--mono);font-size:9px;color:var(--muted-2);white-space:nowrap}
+  .grat-cap{font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:9px;line-height:1.6;letter-spacing:-.1px}
+
+  .dl{display:flex;flex-direction:column;gap:7px}
+  .dl{gap:9px}
+  .dl .btn{text-align:left;justify-content:flex-start;flex-direction:column;align-items:flex-start;gap:3px;
+           padding:11px 13px;font-size:12.5px;font-weight:600;white-space:normal}
+  .dl .btn small{font-size:10px;font-weight:450;color:var(--muted);font-family:var(--mono);letter-spacing:-.1px;
+                 white-space:normal;line-height:1.5}
+  .dl .btn.primary small{color:rgba(255,255,255,.72)}
+  select{background:var(--card);border:1px solid var(--line-2);border-radius:7px;padding:4px 7px;
+         font-size:11.5px;font-family:var(--mono);box-shadow:var(--shadow-sm)}
+
+  /* ---------------- empty state ---------------- */
+  #drop{position:fixed;inset:var(--bar) 0 0;display:flex;align-items:center;justify-content:center;
+        padding:24px;background:var(--bg);z-index:30}
+  #drop .box{background:var(--card);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow-lg);
+             padding:46px 44px 38px;max-width:900px;width:100%;text-align:center;
+             display:flex;flex-direction:column;align-items:center;gap:16px;
+             transition:border-color .15s,background .15s}
+  #drop.over .box{border-color:var(--brand);background:var(--card-2)}
+  #drop h1{font-family:var(--display);font-size:clamp(25px,2.7vw,36px);font-weight:540;letter-spacing:-1.3px;
+           line-height:1.08;text-wrap:balance}
+  #drop p{color:var(--ink-2);font-size:15.5px;font-weight:450;line-height:1.6;text-wrap:pretty}
+  #drop .eyebrow{color:var(--brand)}
+  .ruler{width:min(560px,92%);height:34px;color:var(--line-2)}
+  .fine{font-size:11.5px;color:var(--muted);font-family:var(--mono);letter-spacing:-.1px;line-height:1.6}
+  .hide{display:none!important}
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="mk" viewBox="0 0 24 24">
+    <path d="M3 17h18" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+    <path d="M6 17v-4M12 17V8M18 17v-4" stroke="#fff" stroke-width="2" stroke-linecap="round" opacity=".85"/>
+  </symbol>
+</defs></svg>
+
+<div class="topbar">
+  <div class="brand">
+    <div class="mark"><svg viewBox="0 0 24 24"><use href="#mk"/></svg></div>
+    <b>Scale Bar</b>
+  </div>
+  <div class="fileid" id="fileid">
+    <span class="nm" id="fname">no file open</span>
+    <span class="sub" id="fsub"></span>
+  </div>
+  <div class="flagline" id="warn"></div>
+  <div class="topact">
+    <div class="row hide" id="planeRow" style="margin:0">
+      <span style="font-size:11.5px">Plane</span>
+      <select id="plane"></select>
+    </div>
+    <button class="btn" id="pick2">Open .oir</button>
+  </div>
+</div>
+
+<div class="app" id="work">
+  <!-- left rail: what is in the image -->
+  <aside class="col left">
+    <section class="sec">
+      <h2><span class="n">01</span> Channels <span class="side" id="chCount"></span></h2>
+      <div class="panel" id="chList"></div>
+    </section>
+
+    <section class="sec batch">
+      <h2><span class="n alt">ALL</span> Whole folder <span class="side" id="batchCount"></span></h2>
+      <div class="panel">
+        <button class="btn" id="batchPick" style="width:100%;justify-content:center;white-space:normal">Choose folder…</button>
+        <input type="file" id="folder" webkitdirectory multiple class="hide">
+        <div class="cbs">
+          <label class="cb"><input type="checkbox" id="cbBar" checked>Scale bar</label>
+          <label class="cb"><input type="checkbox" id="cbLab" checked>Length text (50 µm)</label>
+          <label class="cb"><input type="checkbox" id="cbNames" checked>Channel names</label>
+        </div>
+        <div class="grat-cap" id="burnNote">Applies to the preview and to every export, single or batch.</div>
+        <div class="grat-cap" id="batchWhere"></div>
+        <div id="batchBody" class="hide">
+          <div class="row" style="margin-top:11px"><span>Levels</span>
+            <div class="seg" id="lv">
+              <button data-v="match" aria-pressed="true">Match this</button>
+              <button data-v="auto" aria-pressed="false">Auto each</button>
+            </div>
+          </div>
+          <div class="grat-cap" id="lvNote"></div>
+          <button class="btn primary" id="batchGo" style="width:100%;justify-content:center;margin-top:11px;white-space:normal;text-align:center">Export composites</button>
+          <div class="bprog hide" id="batchProg"><i></i></div>
+          <div class="grat-cap" id="batchLog"></div>
+          <div class="brow hide" id="batchAfter">
+            <button class="btn" id="batchOpen">Show the folder</button>
+          </div>
+          <div class="bgrid" id="batchGrid"></div>
+        </div>
+      </div>
+    </section>
+
+  </aside>
+
+  <!-- centre: the image, as large as the window allows -->
+  <main class="center">
+    <div id="stage">
+      <div class="mat" id="cwrap"><canvas id="view"></canvas></div>
+    </div>
+    <div class="hint">Click or drag on the image to move the bar · contrast is linear, black and white point only</div>
+  </main>
+
+  <!-- right: settings and export, side by side -->
+  <div class="rails">
+    <aside class="col">
+    <section class="sec">
+      <h2><span class="n">02</span> Bar length <span class="side" id="barReadout"></span></h2>
+      <div class="panel">
+        <div class="grat" id="grat"></div>
+        <div class="grat-cap" id="gratCap"></div>
+      </div>
+    </section>
+
+    <section class="sec">
+      <h2><span class="n">03</span> Bar style</h2>
+      <div class="panel">
+        <div class="row"><span>Corner</span>
+          <div class="seg" id="pos">
+            <button data-p="tl" aria-pressed="false">TL</button>
+            <button data-p="tr" aria-pressed="false">TR</button>
+            <button data-p="bl" aria-pressed="false">BL</button>
+            <button data-p="br" aria-pressed="true">BR</button>
+          </div>
+        </div>
+        <div class="row"><span>Colour</span>
+          <div class="seg" id="col">
+            <button data-c="#ffffff" aria-pressed="true">White</button>
+            <button data-c="#000000" aria-pressed="false">Black</button>
+            <button data-c="#fff100" aria-pressed="false">Yellow</button>
+          </div>
+        </div>
+        <div class="row"><span>Thickness</span><input type="range" id="th" min="0.4" max="4" step="0.1" value="1.2" style="max-width:104px"><output id="thOut"></output></div>
+        <div class="row"><span>Text size</span><input type="range" id="fs" min="2" max="12" step="0.2" value="5.2" style="max-width:104px"><output id="fsOut"></output></div>
+        <div class="row"><span>Margin</span><input type="range" id="mg" min="1" max="12" step="0.2" value="4.5" style="max-width:104px"><output id="mgOut"></output></div>
+      </div>
+    </section>
+
+      <div class="prov">
+        <span class="eyebrow">Recorded by the scope</span>
+        <div class="meta" id="prov"></div>
+      </div>
+    </aside>
+    <aside class="col">
+    <section class="sec" id="secExport">
+      <h2><span class="n">04</span> Export</h2>
+      <div class="panel" style="margin-bottom:8px">
+        <div class="row"><span>Pixel scale</span>
+          <div class="seg" id="up">
+            <button data-u="1" aria-pressed="true">1×</button>
+            <button data-u="2" aria-pressed="false">2×</button>
+            <button data-u="4" aria-pressed="false">4×</button>
+          </div>
+        </div>
+        <div class="meta"><div id="dTifSize"></div>
+          <div style="color:var(--muted-2)">Nearest-neighbour: no detail invented, only a sharper bar. Raw 16-bit always exports at native size.</div>
+        </div>
+      </div>
+      <div class="dl">
+        <button class="btn primary" id="dTif" disabled>Composite TIFF + bar<small>8-bit RGB, uncompressed</small></button>
+        <button class="btn" id="dPng" disabled>Composite PNG + bar<small>slides and Slack</small></button>
+        <button class="btn" id="dCh" disabled>Channels, greyscale + bar<small>one per shown channel, uncompressed</small></button>
+        <button class="btn" id="dRaw" disabled>Raw 16-bit channels<small>the lossless one · original values</small></button>
+        <button class="btn" id="dTxt" disabled>Acquisition metadata<small>.txt for a methods section</small></button>
+      </div>
+      <div class="willwrite">
+        <span class="eyebrow">Will be written</span>
+        <div class="fn" id="wwName">—</div>
+        <div class="sub" id="wwSpec"></div>
+        <div class="legend" id="wwLegend"></div>
+        <div class="sub" id="wwDest"></div>
+      </div>
+    </section>
+    </aside>
+  </div>
+</div>
+
+<!-- empty state, overlaid until a file is open -->
+<div id="drop">
+  <div class="box rise">
+    <span class="eyebrow">Olympus FluoView · .oir</span>
+    <h1>A scale bar that is right by construction.</h1>
+    <p>Drop an .oir — it reads the µm-per-pixel your scope recorded and burns a bar of exactly the right length.</p>
+    <svg class="ruler" viewBox="0 0 460 34" aria-hidden="true">
+      <line x1="1" y1="25" x2="459" y2="25" stroke="currentColor" stroke-width="1"/>
+      <g id="rulerTicks" stroke="var(--brand)"></g>
+    </svg>
+    <button class="btn primary" id="pick">Choose a file</button>
+    <input type="file" id="file" accept=".oir" class="hide">
+    <div class="fine" id="status">Nothing is uploaded, the file is read in this tab · single-file .oir from FluoView 2.x · FV1000 / FV3000</div>
+  </div>
+</div>
+
+<script>
+/* ===PARSER_START=== */
+const OIR = (() => {
+  const ascii = (bytes, off, len) => {
+    let s = "";
+    for (let i = 0; i < len; i++) s += String.fromCharCode(bytes[off + i]);
+    return s;
+  };
+
+  const DYE_LUT = [
+    [/dapi|hoech/, "#3b6cff"], [/405/, "#3b6cff"],
+    [/488|gfp|fitc/, "#00e35c"],
+    [/555|568|546|594|tritc|cy3|dsred|rfp|mcherry/, "#ff3b30"],
+    [/647|633|cy5|apc/, "#ff44c8"],
+  ];
+  /* with no dye recorded, fall back to distinct colours by index — white is only
+     sensible for a single channel, and two channels must never land on one colour */
+  const dyeColour = (dye, idx, n) => {
+    const d = (dye || "").toLowerCase();
+    for (const [re, c] of DYE_LUT) if (re.test(d)) return c;
+    if (n === 1) return "#ffffff";
+    return ["#00e35c", "#ff3b30", "#3b6cff", "#ff44c8", "#00d5ff", "#fff100"][idx % 6];
+  };
+
+  /* every <?xml …?> segment; each is NUL-terminated inside the container */
+  function xmlSegments(bytes) {
+    const out = [], n = bytes.length;
+    for (let i = 0; i < n - 5; i++) {
+      if (bytes[i] === 60 && bytes[i + 1] === 63 && bytes[i + 2] === 120 &&
+          bytes[i + 3] === 109 && bytes[i + 4] === 108) {
+        let j = i;
+        const lim = Math.min(n, i + 400000);
+        while (j < lim && bytes[j] !== 0) j++;
+        /* blocks can carry a stray control byte after the closing tag,
+           which makes a strict DOMParser reject the whole document */
+        const s = ascii(bytes, i, j - i);
+        const end = s.lastIndexOf(">");
+        if (end > 0) out.push(s.slice(0, end + 1));
+        i = j;
+      }
+    }
+    return out;
+  }
+
+  /* pixel block: [len][3][8 unknown][uidLen][uid][nBytes][4 unknown][data] */
+  function pixelBlocks(bytes, dv) {
+    const n = bytes.length, out = [];
+    let p = 0;
+    while (p + 40 < n) {
+      if (dv.getInt32(p + 4, true) === 3) {
+        const cl = dv.getInt32(p, true);
+        if (cl > 12 && cl < 300) {
+          const uidLen = dv.getInt32(p + 16, true);
+          if (cl === uidLen + 12 && uidLen > 0 && uidLen < 250) {
+            let ok = true;
+            for (let i = 0; i < uidLen; i++) {
+              const c = bytes[p + 20 + i];
+              if (c < 32 || c > 126) { ok = false; break; }
+            }
+            if (ok) {
+              const nb = dv.getInt32(p + 20 + uidLen, true);
+              if (nb > 0 && nb <= n - p) {
+                out.push({ uid: ascii(bytes, p + 20, uidLen), nb, off: p + 28 + uidLen });
+                p += 28 + uidLen + nb;
+                continue;
+              }
+            }
+          }
+        }
+      }
+      p++;
+    }
+    return out;
+  }
+
+  const txt = (el, tag) => {
+    const l = el ? el.getElementsByTagName(tag) : null;
+    return l && l.length ? l[0].textContent.trim() : null;
+  };
+
+  function parse(buffer) {
+    const bytes = new Uint8Array(buffer), dv = new DataView(buffer);
+    if (ascii(bytes, 0, 16) !== "OLYMPUSRAWFORMAT")
+      throw new Error("That file is not an Olympus .oir — the header signature is missing.");
+
+    const dp = new DOMParser();
+    let props = null;
+    const chanXml = {};
+    for (const s of xmlSegments(bytes)) {
+      const head = s.slice(0, 260);
+      if (head.includes("lsmimage:imageProperties") && !props) props = s;
+      else if (head.includes("lsmimage:lsmChannel")) {
+        const m = head.match(/id="([0-9a-f-]{36})"/);
+        if (m) chanXml[m[1]] = s;
+      }
+    }
+    if (!props) throw new Error("No image-properties block in this file. If it is one of the numbered companion files, open the main .oir instead.");
+
+    const doc = dp.parseFromString(props, "text/xml");
+    if (doc.getElementsByTagName("parsererror").length)
+      throw new Error("The metadata block in this file could not be read.");
+    const root = doc.documentElement;
+    const W = parseInt(txt(root, "commonimage:width"), 10);
+    const H = parseInt(txt(root, "commonimage:height"), 10);
+    if (!W || !H) throw new Error("Could not read the image size from this file.");
+
+    const lenEl = root.getElementsByTagName("commonphase:length")[0];
+    const pxUm = lenEl ? parseFloat(txt(lenEl, "commonparam:x")) : NaN;
+    if (!isFinite(pxUm) || pxUm <= 0) throw new Error("This file carries no pixel-size calibration, so a scale bar cannot be trusted.");
+
+    const objEl = root.getElementsByTagName("commonimage:objectiveLens")[0];
+    const meta = {
+      width: W, height: H, pxUm,
+      unit: txt(root, "commonphase:x") || "MICRO_METER",
+      system: txt(root, "base:systemName"),
+      sw: txt(root, "base:systemVersion"),
+      scope: txt(root, "base:name"),
+      date: txt(root, "base:creationDateTime"),
+      objective: objEl ? txt(objEl, "opticalelement:name") : null,
+      na: objEl ? txt(objEl, "opticalelement:naValue") : null,
+      immersion: objEl ? txt(objEl, "opticalelement:immersion") : null,
+      zoom: txt(root, "lsmparam:zoom"),
+      bits: parseInt(txt(root, "commonphase:bitCounts") || "16", 10),
+      depth: parseInt(txt(root, "commonphase:depth") || "2", 10),
+    };
+
+    /* only the channels under imageInfo were actually acquired; the acquisition
+       block also declares lambda-scan channels that hold no pixel data */
+    const chans = [];
+    const info = root.getElementsByTagName("commonimage:imageInfo")[0] || root;
+    const nodes = info.getElementsByTagName("commonphase:channel");
+    for (let i = 0; i < nodes.length; i++) {
+      const el = nodes[i], id = el.getAttribute("id");
+      if (!id || chans.some(c => c.id === id)) continue;
+      if ((el.getAttribute("xsi:type") || "").includes("Lambda")) continue;
+      if (!el.getElementsByTagName("commonphase:name").length) continue;
+      let dye = null;
+      if (chanXml[id]) {
+        const m = chanXml[id].match(/<dye:name>(.*?)<\/dye:name>/);
+        if (m) dye = m[1];
+      }
+      chans.push({
+        id, dye,
+        order: parseInt(el.getAttribute("order") || String(i + 1), 10),
+        name: txt(el, "commonphase:name") || "CH" + (i + 1),
+      });
+    }
+    chans.sort((a, b) => a.order - b.order);
+    chans.forEach((c, i) => { c.colour = dyeColour(c.dye, i, chans.length); });
+
+    /* assemble planes; the low-res REF_LSM preview blocks are skipped */
+    const groups = new Map();
+    for (const b of pixelBlocks(bytes, dv)) {
+      if (b.uid.startsWith("REF_LSM")) continue;
+      const m = b.uid.match(/^(.+?)_([0-9a-f-]{36})_(\d+)$/);
+      if (!m) continue;
+      const key = m[1] + "\u0000" + m[2];
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push({ i: parseInt(m[3], 10), off: b.off, nb: b.nb });
+    }
+    if (!groups.size) throw new Error("No pixel data found in this file.");
+
+    const prefixes = [...new Set([...groups.keys()].map(k => k.split("\u0000")[0]))].sort();
+    const two = meta.depth !== 1;
+    const planes = prefixes.map(pref => chans.map(c => {
+      const parts = groups.get(pref + "\u0000" + c.id);
+      const px = new Uint16Array(W * H);
+      if (!parts) return { data: px, empty: true, min: 0, max: 0, mean: 0, lo: 0, hi: 1, clipped: false, clipPct: 0 };
+      parts.sort((a, b) => a.i - b.i);
+      let w = 0;
+      for (const p of parts) {
+        if (w >= px.length) break;
+        if (!two) {
+          const v = new Uint8Array(buffer, p.off, Math.min(p.nb, px.length - w));
+          for (let k = 0; k < v.length; k++) px[w + k] = v[k];
+          w += v.length;
+        } else if ((p.off & 1) === 0) {
+          /* aligned: copy 16-bit words straight across */
+          const v = new Uint16Array(buffer, p.off, Math.min(p.nb >> 1, px.length - w));
+          px.set(v, w); w += v.length;
+        } else {
+          /* block starts on an odd byte, so a Uint16Array view is illegal here */
+          const count = Math.min(p.nb >> 1, px.length - w);
+          for (let k = 0; k < count; k++)
+            px[w + k] = bytes[p.off + 2 * k] | (bytes[p.off + 2 * k + 1] << 8);
+          w += count;
+        }
+      }
+      return stats(px, meta.bits);
+    }));
+
+    return { meta, chans, planes };
+  }
+
+  /* channel statistics plus a linear default display range (0.1 – 99.9 %) */
+  function stats(px, bits) {
+    const hist = new Uint32Array(65536);
+    let min = 65535, max = 0, sum = 0;
+    for (let i = 0; i < px.length; i++) {
+      const v = px[i];
+      hist[v]++; sum += v;
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+    const n = px.length;
+    const at = frac => {
+      const target = frac * n;
+      let acc = 0;
+      for (let v = 0; v < 65536; v++) { acc += hist[v]; if (acc >= target) return v; }
+      return 65535;
+    };
+    const full = (1 << bits) - 1;
+    const lo = max === 0 ? 0 : at(0.001);
+    return {
+      data: px, empty: max === 0, min, max, mean: sum / n,
+      lo, hi: max === 0 ? full : Math.max(at(0.999), lo + 1),
+      clipped: max >= full && hist[full] / n > 0.001,
+      clipPct: (hist[full] / n) * 100,
+    };
+  }
+
+  /* integer factors only: nearest-neighbour replication at 2x or 4x is exactly
+     reversible by decimation, so no pixel is invented and none is lost. it buys a
+     print-resolution bar and label, nothing more. */
+  const pickScale = (w, h) => [1, 2, 4].find(f => Math.max(w, h) * f >= 1500) || 1;
+
+  /* round bar lengths; default is the first one at or above 20 % of the field */
+  const NICE = [0.5, 1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000];
+  const suggest = fieldUm => {
+    const target = fieldUm * 0.2;   // closest on a log scale, so 318 µm gives 50 not 100
+    return NICE.reduce((best, v) =>
+      Math.abs(Math.log(v / target)) < Math.abs(Math.log(best / target)) ? v : best, NICE[0]);
+  };
+
+  /* minimal baseline TIFF writer, little-endian, uncompressed */
+  function tiff(pixels, w, h, opts) {
+    const rgb = !!opts.rgb, pxUm = opts.pxUm;
+    const spp = rgb ? 3 : 1, bps = rgb ? 8 : 16;
+    const descBytes = new TextEncoder().encode(
+      "ImageJ=1.54f\nimages=1\nunit=um\n" + (opts.desc || "") + "\0");
+    const E = [];
+    const add = (tag, type, count, value, bytes) => E.push({ tag, type, count, value, bytes });
+
+    add(256, 4, 1, w); add(257, 4, 1, h);
+    if (rgb) add(258, 3, 3, 0, new Uint8Array(new Uint16Array([8, 8, 8]).buffer));
+    else add(258, 3, 1, 16);
+    add(259, 3, 1, 1);                       // no compression
+    add(262, 3, 1, rgb ? 2 : 1);             // RGB / min-is-black
+    add(270, 2, descBytes.length, 0, descBytes);
+    add(273, 4, 1, 0);                       // StripOffsets, patched below
+    add(277, 3, 1, spp);
+    add(278, 4, 1, h);
+    add(279, 4, 1, w * h * spp * (bps / 8));
+    const rat = new Uint8Array(new Uint32Array([1000000, Math.max(1, Math.round(pxUm * 1000000))]).buffer);
+    add(282, 5, 1, 0, rat); add(283, 5, 1, 0, rat.slice());
+    add(296, 3, 1, 1);                       // ResolutionUnit = none, unit comes from the description
+    if (!rgb) add(339, 3, 1, 1);             // SampleFormat = unsigned int
+    E.sort((a, b) => a.tag - b.tag);
+
+    const ifdLen = 2 + 12 * E.length + 4;
+    let extraLen = 0;
+    for (const e of E) if (e.bytes) {
+      e.extraAt = 8 + ifdLen + extraLen;
+      extraLen += e.bytes.length + (e.bytes.length & 1);
+    }
+    const stripAt = 8 + ifdLen + extraLen;
+    E.find(e => e.tag === 273).value = stripAt;
+
+    const buf = new ArrayBuffer(stripAt + w * h * spp * (bps / 8));
+    const dv = new DataView(buf), u8 = new Uint8Array(buf);
+    u8[0] = 0x49; u8[1] = 0x49; dv.setUint16(2, 42, true); dv.setUint32(4, 8, true);
+    dv.setUint16(8, E.length, true);
+    E.forEach((e, i) => {
+      const o = 10 + i * 12;
+      dv.setUint16(o, e.tag, true); dv.setUint16(o + 2, e.type, true); dv.setUint32(o + 4, e.count, true);
+      if (e.bytes) { dv.setUint32(o + 8, e.extraAt, true); u8.set(e.bytes, e.extraAt); }
+      else if (e.type === 3) dv.setUint16(o + 8, e.value, true);
+      else dv.setUint32(o + 8, e.value, true);
+    });
+    if (rgb) u8.set(pixels, stripAt);
+    else new Uint16Array(buf, stripAt, w * h).set(pixels);
+    return new Blob([buf], { type: "image/tiff" });
+  }
+
+  return { parse, stats, suggest, pickScale, tiff, NICE, dyeColour };
+})();
+/* ===PARSER_END=== */
+
+/* ================================ app ================================ */
+const $ = s => document.querySelector(s);
+const state = {
+  file: null, oir: null, plane: 0,
+  bar: 50, pos: "br", colour: "#ffffff", label: true, showBar: true, showNames: true,
+  th: 1.2, fs: 5.2, mg: 4.5, up: 1,
+  custom: null,   // {x,y} normalised bar centre once you move it
+  chan: [],
+};
+
+/* ticks in the empty state, spaced like a stage micrometer */
+(() => {
+  let s = "";
+  for (let i = 0; i <= 40; i++) {
+    const x = 1 + i * 11.45, major = i % 5 === 0;
+    s += `<line x1="${x.toFixed(1)}" y1="${major ? 11 : 18}" x2="${x.toFixed(1)}" y2="25" stroke-width="${major ? 1.5 : 1}" opacity="${major ? .9 : .35}"/>`;
+  }
+  $("#rulerTicks").innerHTML = s;
+})();
+
+/* ---------------------------- file intake ---------------------------- */
+$("#pick").onclick = $("#pick2").onclick = () => $("#file").click();
+$("#file").onchange = e => { if (e.target.files[0]) load(e.target.files[0]); };
+const drop = $("#drop");
+["dragenter", "dragover"].forEach(t => document.addEventListener(t, e => {
+  e.preventDefault(); drop.classList.add("over");
+}));
+document.addEventListener("dragleave", e => { if (!e.relatedTarget) drop.classList.remove("over"); });
+document.addEventListener("drop", e => {
+  e.preventDefault(); drop.classList.remove("over");
+  const f = e.dataTransfer.files[0];
+  if (f) load(f);
+});
+
+async function load(file, keep) {
+  const st = $("#status");
+  st.style.color = "var(--muted)";
+  st.textContent = `Reading ${file.name} — ${(file.size / 1048576).toFixed(1)} MB …`;
+  await new Promise(r => setTimeout(r, 30));
+  try {
+    const oir = OIR.parse(await file.arrayBuffer());
+    if (document.fonts && document.fonts.ready) await document.fonts.ready;
+    state.file = file; state.oir = oir; state.plane = 0; state.custom = null;
+    const kept = state.chan;                       // names survive opening another file
+    state.chan = oir.chans.map((c, i) => {
+      const p = oir.planes[0][i], ref = kept[i], use = keep && ref;
+      const matched = use && BATCH.levels === "match";
+      return {
+        on: p.empty ? false : (use ? ref.on : true),
+        lut: use ? ref.lut : c.colour,
+        lo: matched ? ref.lo : p.lo,
+        hi: matched ? ref.hi : p.hi,
+        name: ref ? ref.name : "",
+      };
+    });
+    if (!keep) {                                   // a result keeps the bar you set
+      state.bar = OIR.suggest(oir.meta.width * oir.meta.pxUm);
+      state.up = OIR.pickScale(oir.meta.width, oir.meta.height);
+    }
+    mount();
+  } catch (err) {
+    st.textContent = err.message;
+    st.style.color = "var(--warn)";
+    console.error(err);
+  }
+}
+
+/* ------------------------------- mount ------------------------------- */
+function mount() {
+  const { meta, chans, planes } = state.oir;
+  $("#drop").classList.add("hide");
+  ["#dTif", "#dPng", "#dCh", "#dRaw", "#dTxt"].forEach(s => $(s).disabled = false);
+
+  const f = (n, d = 2) => Number(n).toFixed(d);
+  $("#fname").textContent = state.file.name;
+  $("#fsub").innerHTML =
+    `<b>${f(meta.pxUm, 4)} µm</b>/px · <b>${f(meta.width * meta.pxUm, 0)} µm</b> field · ` +
+    `${meta.width}×${meta.height} · ${chans.length} ch · ${meta.bits}-bit` +
+    (planes.length > 1 ? ` · ${planes.length} planes` : "");
+  $("#prov").innerHTML = [
+    ["objective", `${meta.objective || "?"} · NA ${meta.na || "?"} · ${meta.immersion ? meta.immersion.toLowerCase() : "?"} · zoom ${meta.zoom || "?"}`],
+    ["instrument", `${meta.system || "?"}${meta.scope ? " · " + meta.scope : ""}${meta.sw ? " · sw " + meta.sw : ""}`],
+    ["acquired", (meta.date || "?").replace("T", " ").slice(0, 19)],
+  ].map(([k, v]) => `<div>${k}<b>${v}</b></div>`).join("");
+
+  const notes = [];
+  planes[state.plane].forEach((p, i) => {
+    if (p.empty) notes.push({ kind: "men", text: `${chans[i].name} no signal, left out` });
+    else if (p.clipped) notes.push({ kind: "warn", text: `${chans[i].name} clips on ${p.clipPct.toFixed(1)}% of pixels — don't quantify intensity` });
+  });
+  notes.sort((a, b) => (a.kind === "warn" ? 0 : 1) - (b.kind === "warn" ? 0 : 1));  // stable: keeps channel order
+  $("#warn").innerHTML = notes.map(n =>
+    `<span class="f ${n.kind}" title="${n.text}"><i></i>${n.text}</span>`).join("");
+
+  if (planes.length > 1) {
+    $("#planeRow").classList.remove("hide");
+    $("#plane").innerHTML = planes.map((_, i) => `<option value="${i}">${i + 1} of ${planes.length}</option>`).join("");
+    $("#plane").onchange = e => {
+      state.plane = +e.target.value;
+      state.chan.forEach((c, i) => {
+        const p = planes[state.plane][i];
+        c.lo = p.lo; c.hi = p.hi; c.on = !p.empty;
+      });
+      buildChannels(); render();
+    };
+  } else $("#planeRow").classList.add("hide");
+
+  [...$("#up").children].forEach(b =>
+    b.setAttribute("aria-pressed", +b.dataset.u === state.up));
+  buildChannels(); buildGraticule(); bindStyle(); render(true);
+}
+
+function buildChannels() {
+  const { chans, planes, meta } = state.oir;
+  const full = (1 << meta.bits) - 1;
+  const swatches = ["#ffffff", "#3b6cff", "#00e35c", "#ff3b30", "#ff44c8", "#00d5ff", "#fff100"];
+  $("#chCount").textContent = `${state.chan.filter(c => c.on).length} of ${chans.length} shown`;
+  $("#chList").innerHTML = chans.map((c, i) => {
+    const p = planes[state.plane][i], s = state.chan[i];
+    /* a channel with no signal keeps every control. "no signal" is our reading of
+       the pixels, not a reason to lock the row: you may want to see it for
+       yourself, and colour and name are inherited by index in a batch, so this
+       may be the only place to set them for a channel that is empty here and
+       full of signal in the next file. */
+    return `<div class="ch ${s.on ? "" : "off"}">
+      <div class="ch-head">
+        <span class="chip" style="background:${s.lut}"></span>
+        <span class="ch-name">${c.name}</span>
+        <input class="ch-in" data-nm="${i}" value="${(s.name || "").replace(/"/g, "&quot;")}"
+               placeholder="${(c.dye || "name on image").replace(/"/g, "&quot;")}" maxlength="24"
+               title="Typed here, this name is burned onto the image in the channel's colour">
+        <label class="sw" title="show this channel"><input type="checkbox" data-on="${i}" ${s.on ? "checked" : ""}><i></i></label>
+      </div>
+      ${p.empty ? `<div class="nosig">no signal in this file — controls still apply to a batch</div>` : ""}
+      <div class="lut">${swatches.map(w => `<button data-lut="${i}" data-c="${w}" aria-pressed="${w === s.lut}" style="background:${w}" title="${w}"></button>`).join("")}</div>
+      <div class="lvl">
+        <span>black</span><input type="range" data-lo="${i}" min="0" max="${full}" value="${s.lo}"><output>${s.lo}</output>
+        <span>white</span><input type="range" data-hi="${i}" min="1" max="${full}" value="${s.hi}"><output>${s.hi}</output>
+      </div>
+    </div>`;
+  }).join("");
+
+  $("#chList").oninput = e => {
+    const t = e.target;
+    if (t.dataset.nm !== undefined) {
+      state.chan[+t.dataset.nm].name = t.value.trim();
+      render();
+      return;
+    }
+    const key = t.dataset.lo !== undefined ? "lo" : t.dataset.hi !== undefined ? "hi" : t.dataset.on !== undefined ? "on" : null;
+    if (!key) return;
+    const i = +(t.dataset.lo ?? t.dataset.hi ?? t.dataset.on);
+    if (key === "on") {
+      state.chan[i].on = t.checked;
+      t.closest(".ch").classList.toggle("off", !t.checked);
+      $("#chCount").textContent = `${state.chan.filter(c => c.on).length} of ${state.oir.chans.length} shown`;
+    } else {
+      state.chan[i][key] = +t.value;
+      if (t.nextElementSibling) t.nextElementSibling.textContent = t.value;
+    }
+    render();
+  };
+  $("#chList").onclick = e => {
+    const b = e.target.closest("button[data-lut]");
+    if (!b) return;
+    state.chan[+b.dataset.lut].lut = b.dataset.c;
+    buildChannels(); render();
+  };
+}
+
+/* the signature control: candidate bars drawn at true relative width */
+function buildGraticule() {
+  const { meta } = state.oir;
+  const fieldUm = meta.width * meta.pxUm;
+  const opts = OIR.NICE.filter(v => v / fieldUm >= 0.02 && v / fieldUm <= 0.75);
+  if (!opts.includes(state.bar)) {
+    opts.push(state.bar);
+    opts.sort((a, b) => a - b);
+  }
+  $("#grat").innerHTML = opts.map(v => {
+    const pct = (v / fieldUm) * 100;
+    return `<button data-bar="${v}" aria-pressed="${v === state.bar}">
+      <span class="len">${v} µm</span>
+      <span class="track"><span class="seg2" style="width:${pct.toFixed(2)}%"></span>
+      <span class="pct" style="left:calc(${pct.toFixed(2)}% + 6px)">${pct.toFixed(0)}% of width</span></span>
+    </button>`;
+  }).join("");
+  $("#grat").onclick = e => {
+    const b = e.target.closest("button[data-bar]");
+    if (!b) return;
+    state.bar = +b.dataset.bar;
+    [...$("#grat").children].forEach(c => c.setAttribute("aria-pressed", c === b));
+    render();
+  };
+  $("#gratCap").textContent = `To scale against your ${fieldUm.toFixed(0)} µm field — pick by eye.`;
+}
+
+function bindStyle() {
+  const seg = (sel, key, cast = v => v) => {
+    $(sel).onclick = e => {
+      const b = e.target.closest("button");
+      if (!b) return;
+      [...$(sel).children].forEach(c => c.setAttribute("aria-pressed", c === b));
+      state[key] = cast(b.dataset[Object.keys(b.dataset)[0]]);
+      if (key === "pos") state.custom = null;
+      render();
+    };
+  };
+  seg("#pos", "pos"); seg("#col", "colour"); seg("#up", "up", v => +v);
+  [["#cbBar", "showBar"], ["#cbLab", "label"], ["#cbNames", "showNames"]].forEach(([sel, key]) => {
+    $(sel).checked = state[key];
+    $(sel).onchange = e => { state[key] = e.target.checked; render(); };
+  });
+  ["th", "fs", "mg"].forEach(k => { $("#" + k).oninput = e => { state[k] = +e.target.value; render(); }; });
+}
+
+/* ----------------------------- rendering ----------------------------- */
+/* both of these return RGBA, which is what ImageData takes.
+   compositeOn / barGeometryOn / paintOn take their subject as arguments, so a
+   batch run puts other files through the exact same pipeline as the open one. */
+function compositeOn(meta, plane, chan) {
+  const n = meta.width * meta.height;
+  const out = new Uint8ClampedArray(n * 4);
+  for (let o = 3; o < out.length; o += 4) out[o] = 255;
+  chan.forEach((s, i) => {
+    if (!s.on || !plane[i]) return;
+    const px = plane[i].data;
+    const r = parseInt(s.lut.slice(1, 3), 16) / 255,
+          g = parseInt(s.lut.slice(3, 5), 16) / 255,
+          b = parseInt(s.lut.slice(5, 7), 16) / 255;
+    const lo = s.lo, span = Math.max(1, s.hi - s.lo);
+    for (let k = 0, o = 0; k < n; k++, o += 4) {
+      let v = (px[k] - lo) / span;
+      if (v <= 0) continue;
+      if (v > 1) v = 1;
+      v *= 255;
+      const vr = v * r, vg = v * g, vb = v * b;
+      if (vr > out[o]) out[o] = vr;
+      if (vg > out[o + 1]) out[o + 1] = vg;
+      if (vb > out[o + 2]) out[o + 2] = vb;
+    }
+  });
+  return out;
+}
+function composite() {
+  const { meta, planes } = state.oir;
+  return compositeOn(meta, planes[state.plane], state.chan);
+}
+
+function grey(i) {
+  const { meta, planes } = state.oir;
+  const px = planes[state.plane][i].data, s = state.chan[i];
+  const n = meta.width * meta.height;
+  const out = new Uint8ClampedArray(n * 4);
+  const lo = s.lo, span = Math.max(1, s.hi - s.lo);
+  for (let k = 0, o = 0; k < n; k++, o += 4) {
+    let v = (px[k] - lo) / span;
+    v = v <= 0 ? 0 : v > 1 ? 255 : v * 255;
+    out[o] = out[o + 1] = out[o + 2] = v;
+    out[o + 3] = 255;
+  }
+  return out;
+}
+
+function barGeometryOn(meta, W, H, o) {
+  const px = Math.min(W, (o.bar / meta.pxUm) * (W / meta.width));
+  const th = Math.max(1, (o.th / 100) * H);
+  const fs = (o.fs / 100) * H;
+  const m = (o.mg / 100) * Math.min(W, H);
+  const head = th + (o.label ? fs * 1.35 : 0);
+  let x1, y1;
+  if (o.custom) {
+    const cx = Math.min(W - px / 2, Math.max(px / 2, o.custom.x * W));
+    x1 = cx + px / 2;
+    y1 = Math.min(H, Math.max(head, o.custom.y * H + th / 2));
+  } else {
+    x1 = o.pos.endsWith("r") ? W - m : m + px;
+    y1 = o.pos.startsWith("b") ? H - m : m + head;
+  }
+  return { x0: x1 - px, x1, y1, th, fs, px, m };
+}
+function barGeometry(W, H) { return barGeometryOn(state.oir.meta, W, H, state); }
+
+function paintOn(meta, o, rgb, canvas, up) {
+  const W = meta.width, H = meta.height;
+  const src = document.createElement("canvas");
+  src.width = W; src.height = H;
+  src.getContext("2d").putImageData(new ImageData(rgb, W, H), 0, 0);
+  canvas.width = W * up; canvas.height = H * up;
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(src, 0, 0, W * up, H * up);
+
+  const g = barGeometryOn(meta, W * up, H * up, o);
+  const face = `600 ${g.fs}px Inter, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif`;
+  /* a thin dark halo: invisible against the black of an unlabelled corner, and the
+     difference between legible and lost when a label lands on bright signal */
+  const halo = txt => {
+    ctx.lineWidth = g.fs * 0.15;
+    ctx.lineJoin = "round";
+    ctx.miterLimit = 2;
+    ctx.strokeStyle = "rgba(0,0,0,.72)";
+    ctx.strokeText(txt.t, txt.x, txt.y);
+  };
+
+  if (o.showBar) {
+    ctx.fillStyle = o.colour;
+    ctx.fillRect(g.x0, g.y1 - g.th, g.px, g.th);
+  }
+  if (o.label) {
+    ctx.font = face;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+    const t = { t: `${o.bar} µm`, x: (g.x0 + g.x1) / 2, y: g.y1 - g.th - g.fs * 0.42 };
+    if (o.colour !== "#000000") halo(t);
+    ctx.fillStyle = o.colour;
+    ctx.fillText(t.t, t.x, t.y);
+  }
+  /* channel names go in the corner opposite the bar, each in its own colour —
+     the convention every fluorescence panel uses */
+  if (o.showNames && o.labels && o.labels.length) {
+    const left = o.custom ? true : o.pos.endsWith("r");
+    const top = o.custom ? true : o.pos.startsWith("b");
+    const lh = g.fs * 1.32;
+    ctx.font = face;
+    ctx.textAlign = left ? "left" : "right";
+    ctx.textBaseline = "alphabetic";
+    const x = left ? g.m : (W * up) - g.m;
+    o.labels.forEach((L, i) => {
+      const y = top ? g.m + g.fs + i * lh
+                    : (H * up) - g.m - (o.labels.length - 1 - i) * lh;
+      halo({ t: L.text, x, y });
+      ctx.fillStyle = L.colour;
+      ctx.fillText(L.text, x, y);
+    });
+  }
+  return canvas;
+}
+function nameLabels(chan) {
+  return chan.filter(c => c.on && c.name).map(c => ({ text: c.name, colour: c.lut }));
+}
+function paint(rgb, canvas, up) {
+  return paintOn(state.oir.meta, { ...state, labels: nameLabels(state.chan) }, rgb, canvas, up);
+}
+
+/* one redraw per frame, so sliders stay responsive on large images */
+let queued = false;
+function render(first) {
+  if (first) return draw(true);
+  if (queued) return;
+  queued = true;
+  requestAnimationFrame(() => { queued = false; draw(false); });
+}
+
+let lastRGB = null;
+function draw(first) {
+  const { meta } = state.oir;
+  lastRGB = composite();
+  fitView();
+  $("#barReadout").textContent = `${state.bar} µm = ${(state.bar / meta.pxUm).toFixed(1)} px`;
+  $("#thOut").textContent = ((state.th / 100) * meta.height * state.up).toFixed(0) + " px";
+  $("#fsOut").textContent = ((state.fs / 100) * meta.height * state.up).toFixed(0) + " px";
+  $("#mgOut").textContent = ((state.mg / 100) * Math.min(meta.width, meta.height) * state.up).toFixed(0) + " px";
+  const stem0 = state.file ? state.file.name.replace(/\.oir$/i, "") : "image";
+  $("#wwName").textContent = `${stem0}_composite_${state.bar}um.tif`;
+  $("#wwSpec").textContent =
+    `${meta.width * state.up} × ${meta.height * state.up} px · 8-bit RGB · uncompressed`;
+  const burn = [];
+  if (state.showBar) burn.push("bar");
+  if (state.label) burn.push(`${state.bar} µm`);
+  const names = state.showNames ? nameLabels(state.chan) : [];
+  $("#wwLegend").innerHTML =
+    (burn.length ? `<span><i style="background:${state.colour};box-shadow:inset 0 0 0 1px rgba(0,0,0,.35)"></i>${burn.join(" + ")}</span>` : "") +
+    names.map(n => `<span><i style="background:${n.colour}"></i>${n.text}</span>`).join("") +
+    (burn.length || names.length ? "" : `<span class="none">nothing burned in</span>`);
+  $("#wwDest").textContent = BATCH.dir
+    ? "batch goes to scalebar_export/ in the folder you picked"
+    : "batch downloads one file each";
+  const bytes = meta.width * meta.height * 3 * state.up * state.up;
+  $("#dTifSize").innerHTML = `<b>${meta.width * state.up} × ${meta.height * state.up} px</b>RGB, about ${(bytes / 1048576).toFixed(1)} MB`;
+  if (first) {
+    const mat = $("#cwrap"), line = document.createElement("div");
+    line.className = "sweep";
+    mat.classList.add("scanning");
+    mat.appendChild(line);
+    setTimeout(() => { line.remove(); mat.classList.remove("scanning"); }, 950);
+  }
+}
+
+/* scale the image to fill the middle column, nearest-neighbour so pixels stay honest */
+function fitView() {
+  const { meta } = state.oir, stage = $("#stage"), v = $("#view");
+  if (!lastRGB) return;
+  let cssW = meta.width, cssH = meta.height;
+  const bw = stage.clientWidth, bh = stage.clientHeight;
+  if (bw && bh) {                               // 0 in the stacked layout, where css sizes it
+    const s = Math.min(bw / meta.width, bh / meta.height);
+    cssW = Math.max(80, Math.floor(meta.width * s));
+    cssH = Math.max(80, Math.floor(meta.height * s));
+  }
+  /* draw into a backing store at least as dense as the screen, upscaled
+     nearest-neighbour inside the canvas. otherwise the browser stretches a
+     512px bitmap over ~2000 device pixels and everything — the label most of
+     all — goes soft. */
+  const dpr = Math.min(3, window.devicePixelRatio || 1);
+  const roof = Math.max(1, Math.floor(4096 / meta.width));
+  const up = Math.max(1, Math.min(roof, Math.ceil((cssW * dpr) / meta.width)));
+  paint(lastRGB, v, up);
+  v.style.width = cssW + "px";
+  v.style.height = cssH + "px";
+}
+let refit;
+window.addEventListener("resize", () => {
+  if (!state.oir) return;
+  clearTimeout(refit);
+  refit = setTimeout(fitView, 80);
+});
+
+/* move the bar by clicking or dragging on the image */
+(() => {
+  const view = $("#view");
+  let dragging = false;
+  const at = e => {
+    const r = view.getBoundingClientRect();
+    return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
+  };
+  view.addEventListener("pointerdown", e => {
+    if (!state.oir) return;
+    dragging = true;
+    view.setPointerCapture(e.pointerId);
+    state.custom = at(e); render();
+  });
+  view.addEventListener("pointermove", e => { if (dragging) { state.custom = at(e); render(); } });
+  view.addEventListener("pointerup", () => { dragging = false; });
+})();
+
+/* ======================= whole-folder batch =======================
+   every file goes through the same compositeOn / paintOn path as the open one,
+   so what you tune on screen is exactly what lands on disk. */
+const CAN_WRITE = typeof window.showDirectoryPicker === "function";
+const BATCH = { files: [], dir: null, sub: null, levels: "match", running: false, results: [] };
+
+$("#batchWhere").textContent = CAN_WRITE
+  ? "Results are written into a scalebar_export folder inside the folder you pick."
+  : "This browser cannot write into a folder, so each TIFF downloads normally.";
+
+async function collectFromHandle(dir) {
+  const out = [];
+  for await (const [name, h] of dir.entries()) {
+    if (h.kind !== "file" || !/\.oir$/i.test(name)) continue;
+    if (/_\d{5}\.oir$/i.test(name)) continue;          // companion part-files
+    out.push(await h.getFile());
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+$("#batchPick").onclick = async () => {
+  try {
+    if (CAN_WRITE) {
+      const dir = await window.showDirectoryPicker({ mode: "readwrite" });
+      BATCH.dir = dir; BATCH.sub = null;
+      BATCH.files = await collectFromHandle(dir);
+      afterPick();
+    } else {
+      $("#folder").click();
+    }
+  } catch (e) {
+    if (e && e.name !== "AbortError") batchNote(`Could not open that folder: ${e.message}`, true);
+  }
+};
+$("#folder").onchange = e => {
+  BATCH.dir = null;
+  BATCH.files = [...e.target.files]
+    .filter(f => /\.oir$/i.test(f.name) && !/_\d{5}\.oir$/i.test(f.name))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  afterPick();
+};
+
+function afterPick() {
+  const n = BATCH.files.length;
+  $("#batchCount").textContent = n ? `${n} .oir` : "none found";
+  $("#batchBody").classList.toggle("hide", n === 0);
+  $("#batchLog").innerHTML = "";
+  $("#batchProg").classList.add("hide");
+  if (!n) { batchNote("No .oir files in that folder.", true); return; }
+  $("#batchGo").textContent = `Export ${n} composite${n > 1 ? "s" : ""}`;
+  levelsNote();
+}
+function levelsNote() {
+  $("#lvNote").textContent = BATCH.levels === "match"
+    ? "Same black and white point as the open file — the only way panels stay comparable."
+    : "Each file stretched on its own 0.1–99.9%. Brightness is then not comparable between files.";
+}
+function batchNote(text, bad) {
+  $("#batchLog").innerHTML = `<div class="blog"><span class="${bad ? "bad" : "ok"}">${text}</span></div>`;
+}
+
+$("#lv").onclick = e => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  [...$("#lv").children].forEach(c => c.setAttribute("aria-pressed", c === b));
+  BATCH.levels = b.dataset.v;
+  levelsNote();
+};
+
+/* colours come from section 01 by channel index; levels depend on the mode */
+function batchChan(oir) {
+  const full = (1 << oir.meta.bits) - 1;
+  return oir.chans.map((c, i) => {
+    const ref = state.chan[i], p = oir.planes[0][i];
+    const match = BATCH.levels === "match" && ref;
+    return {
+      on: p.empty ? false : (ref ? ref.on : true),
+      lut: ref ? ref.lut : c.colour,
+      name: ref ? ref.name : "",
+      lo: match ? Math.min(ref.lo, full - 1) : p.lo,
+      hi: match ? Math.min(Math.max(ref.hi, 1), full) : p.hi,
+    };
+  });
+}
+
+async function writeInto(name, blob) {
+  if (!BATCH.sub) BATCH.sub = await BATCH.dir.getDirectoryHandle("scalebar_export", { create: true });
+  const fh = await BATCH.sub.getFileHandle(name, { create: true });
+  const w = await fh.createWritable();
+  await w.write(blob);
+  await w.close();
+}
+
+const THUMBS = [];
+/* clicking a result loads that file into the main viewer with the settings the
+   batch used, so what you see is the file that was written — not a re-guess */
+$("#batchGrid").onclick = async e => {
+  const b = e.target.closest("button[data-r]");
+  if (!b || BATCH.running) return;
+  const r = BATCH.results[+b.dataset.r];
+  if (!r) return;
+  await load(r.file, true);
+  markResult(+b.dataset.r);
+};
+function markResult(i) {
+  [...$("#batchGrid").children].forEach((c, k) => c.classList.toggle("on", k === i));
+}
+function clearThumbs() {
+  THUMBS.forEach(u => URL.revokeObjectURL(u));
+  THUMBS.length = 0;
+  $("#batchGrid").innerHTML = "";
+}
+async function thumbOf(cv) {
+  const t = document.createElement("canvas");
+  const side = 150, k = Math.min(side / cv.width, side / cv.height);
+  t.width = Math.max(1, Math.round(cv.width * k));
+  t.height = Math.max(1, Math.round(cv.height * k));
+  const c = t.getContext("2d");
+  c.imageSmoothingEnabled = true;
+  c.drawImage(cv, 0, 0, t.width, t.height);
+  const url = await new Promise(r => t.toBlob(b => r(URL.createObjectURL(b)), "image/png"));
+  THUMBS.push(url);
+  return url;
+}
+
+/* no web page can open Finder — there is no such browser API. so instead the
+   results come back into the page, and this button reopens the OS folder
+   chooser rooted at the export folder for anyone who wants the real thing. */
+$("#batchOpen").onclick = async () => {
+  if (!BATCH.dir) { batchNote("These went to your downloads — open it from the browser's download list.", false); return; }
+  try {
+    await window.showDirectoryPicker({ startIn: BATCH.sub || BATCH.dir, mode: "read" });
+  } catch (e) { /* cancelled, nothing to do */ }
+};
+
+async function batchRun() {
+  if (BATCH.running || !BATCH.files.length) return;
+  BATCH.running = true;
+  const go = $("#batchGo"), prog = $("#batchProg");
+  go.disabled = true;
+  prog.classList.remove("hide");
+  const rows = [];
+  clearThumbs();
+  $("#batchAfter").classList.add("hide");
+  const opts = { bar: state.bar, pos: state.pos, colour: state.colour, label: state.label,
+                 showBar: state.showBar, showNames: state.showNames,
+                 th: state.th, fs: state.fs, mg: state.mg, custom: null };
+
+  for (let i = 0; i < BATCH.files.length; i++) {
+    const f = BATCH.files[i];
+    go.textContent = `${i + 1} of ${BATCH.files.length} — ${f.name}`;
+    prog.firstElementChild.style.width = `${(i / BATCH.files.length) * 100}%`;
+    await new Promise(r => setTimeout(r, 0));
+    try {
+      const oir = OIR.parse(await f.arrayBuffer());
+      const chan = batchChan(oir);
+      if (!chan.some(c => c.on)) throw new Error("no channel with signal");
+      const up = OIR.pickScale(oir.meta.width, oir.meta.height);
+      const cv = paintOn(oir.meta, { ...opts, labels: nameLabels(chan) },
+                         compositeOn(oir.meta, oir.planes[0], chan),
+                         document.createElement("canvas"), up);
+      const d = cv.getContext("2d").getImageData(0, 0, cv.width, cv.height).data;
+      const bytes = new Uint8Array(cv.width * cv.height * 3);
+      for (let k = 0, o = 0; k < d.length; k += 4, o += 3) {
+        bytes[o] = d[k]; bytes[o + 1] = d[k + 1]; bytes[o + 2] = d[k + 2];
+      }
+      const blob = OIR.tiff(bytes, cv.width, cv.height, {
+        rgb: true, pxUm: oir.meta.pxUm / up,
+        desc: `oir=${f.name}\nobjective=${oir.meta.objective}\npixel_um=${oir.meta.pxUm}\nscalebar_um=${state.bar}\n` });
+      const name = f.name.replace(/\.oir$/i, "") + `_composite_${state.bar}um.tif`;
+      if (BATCH.dir) await writeInto(name, blob); else save(blob, name);
+      const thumb = await thumbOf(cv);
+      /* the bar is a fixed length in µm, so a file at another magnification can
+         end up with an absurd bar. say so rather than shipping it silently. */
+      const frac = (state.bar / oir.meta.pxUm) / oir.meta.width;
+      const note = frac > 0.75 ? `bar is ${Math.round(frac * 100)}% of the width`
+                 : frac < 0.02 ? `bar is under 2% of the width` : "";
+      rows.push({ name: f.name, ok: true, note, thumb, out: name, file: f });
+    } catch (err) {
+      rows.push({ name: f.name, ok: false, note: err.message });
+    }
+  }
+
+  prog.firstElementChild.style.width = "100%";
+  const bad = rows.filter(r => !r.ok).length;
+  const flagged = rows.filter(r => r.ok && r.note);
+  go.disabled = false;
+  go.textContent = `Export ${BATCH.files.length} composite${BATCH.files.length > 1 ? "s" : ""} again`;
+  BATCH.results = rows.filter(r => r.ok);
+  $("#batchGrid").innerHTML = BATCH.results.map((r, i) =>
+    `<button class="bthumb" data-r="${i}" title="${r.out} — click to show it in the viewer">` +
+    `<img src="${r.thumb}" alt="${r.out}"><span>${r.name.replace(/\.oir$/i, "")}</span></button>`).join("");
+  $("#batchAfter").classList.toggle("hide", rows.filter(r => r.ok).length === 0);
+  $("#batchOpen").textContent = BATCH.dir ? "Show the folder" : "Where did they go?";
+  $("#batchLog").innerHTML = `<div class="blog">` +
+    `<div class="n2">${rows.length - bad} of ${rows.length} written` +
+    (BATCH.dir ? " into scalebar_export/" : " to your downloads") + `</div>` +
+    rows.filter(r => !r.ok).map(r => `<div class="bad">${r.name}: ${r.note}</div>`).join("") +
+    flagged.map(r => `<div class="bad">${r.name}: ${r.note}</div>`).join("") +
+    `</div>`;
+  BATCH.running = false;
+}
+$("#batchGo").onclick = batchRun;
+window.batchRun = batchRun; window.BATCH = BATCH; window.state = state;   // for tests
+
+/* ----------------------------- downloads ----------------------------- */
+const save = (blob, name) => {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 6000);
+};
+const stem = () => state.file.name.replace(/\.oir$/i, "") +
+  (state.oir.planes.length > 1 ? `_z${String(state.plane + 1).padStart(3, "0")}` : "");
+const descLine = () => {
+  const m = state.oir.meta;
+  return `oir=${state.file.name}\nobjective=${m.objective} NA${m.na}\npixel_um=${m.pxUm}\nscalebar_um=${state.bar}\n`;
+};
+
+/* rgb bytes with the bar burned in, at the chosen export size */
+function burned(rgbSrc) {
+  const c = paint(rgbSrc, document.createElement("canvas"), state.up);
+  const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+  const out = new Uint8Array(c.width * c.height * 3);
+  for (let i = 0, o = 0; i < d.length; i += 4, o += 3) {
+    out[o] = d[i]; out[o + 1] = d[i + 1]; out[o + 2] = d[i + 2];
+  }
+  return { bytes: out, W: c.width, H: c.height, canvas: c };
+}
+
+$("#dTif").onclick = () => {
+  const b = burned(composite());
+  save(OIR.tiff(b.bytes, b.W, b.H, { rgb: true, pxUm: state.oir.meta.pxUm / state.up, desc: descLine() }),
+       `${stem()}_composite_${state.bar}um.tif`);
+};
+$("#dPng").onclick = () => {
+  burned(composite()).canvas.toBlob(bl => save(bl, `${stem()}_composite_${state.bar}um.png`));
+};
+$("#dCh").onclick = () => {
+  state.chan.forEach((s, i) => {
+    if (!s.on) return;
+    const b = burned(grey(i)), c = state.oir.chans[i];
+    save(OIR.tiff(b.bytes, b.W, b.H, { rgb: true, pxUm: state.oir.meta.pxUm / state.up, desc: descLine() }),
+         `${stem()}_${c.name}_${(c.dye || "ch").replace(/\s+/g, "")}_${state.bar}um.tif`);
+  });
+};
+$("#dRaw").onclick = () => {
+  const { meta, chans, planes } = state.oir;
+  chans.forEach((c, i) => {
+    save(OIR.tiff(planes[state.plane][i].data, meta.width, meta.height,
+                  { rgb: false, pxUm: meta.pxUm, desc: descLine() }),
+         `${stem()}_${c.name}_${(c.dye || "ch").replace(/\s+/g, "")}_raw16.tif`);
+  });
+};
+$("#dTxt").onclick = () => {
+  const { meta, chans, planes } = state.oir;
+  const L = [
+    `source file        : ${state.file.name}`,
+    `instrument         : ${meta.system} / ${meta.scope} (software ${meta.sw})`,
+    `acquired           : ${meta.date}`,
+    `objective          : ${meta.objective}, NA ${meta.na}, ${meta.immersion}, zoom ${meta.zoom}`,
+    `image size         : ${meta.width} x ${meta.height} px, ${chans.length} channels, ${planes.length} plane(s), ${meta.bits}-bit`,
+    `pixel size         : ${meta.pxUm} um/px`,
+    `field of view      : ${(meta.width * meta.pxUm).toFixed(2)} x ${(meta.height * meta.pxUm).toFixed(2)} um`,
+    `scale bar          : ${state.bar} um = ${(state.bar / meta.pxUm).toFixed(1)} px`,
+    "",
+  ];
+  chans.forEach((c, i) => {
+    const p = planes[state.plane][i], s = state.chan[i];
+    L.push(`${c.name.padEnd(4)} ${((s.name ? s.name + " / " : "") + (c.dye || "-")).padEnd(26)} min ${String(p.min).padStart(5)} max ${String(p.max).padStart(5)} mean ${p.mean.toFixed(1).padStart(8)}` +
+      (p.empty ? "   [EMPTY - no signal]"
+               : `   display ${s.lo}-${s.hi} (linear)` + (p.clipped ? `   [CLIPPING on ${p.clipPct.toFixed(1)}% of pixels]` : "")));
+  });
+  L.push("", "Contrast adjustment was linear (black point / white point), applied to the whole image.");
+  save(new Blob([L.join("\n") + "\n"], { type: "text/plain" }), `${stem()}_metadata.txt`);
+};
+</script>
+</body>
+</html>

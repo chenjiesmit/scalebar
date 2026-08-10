@@ -1,0 +1,13 @@
+{
+  "name": "scalebar-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node test_parser.mjs && node test_render.mjs && node test_ui.mjs && node test_batch.mjs && node test_emptybatch.mjs"
+  },
+  "devDependencies": {
+    "@napi-rs/canvas": "^0.1.60",
+    "@xmldom/xmldom": "^0.9.0",
+    "jsdom": "^26.0.0"
+  }
+}
